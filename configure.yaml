@@ -1,0 +1,23 @@
+# AWS:
+  #profile: default
+  # access_key: test
+  # secret_key: test
+  # Region: us-east-1
+  # output: json
+  # endpoint_url: http://localhost:4566
+
+Localstack:
+  True
+
+Stacks:
+  my-stack:
+    vpc:
+      path: templates/vpc/vpc-template.yaml
+      parameters:
+        VPCName: "my-vpc"
+    s3:
+      path: templates/s3/s3-template.yaml
+      parameters:
+        BucketName: "sample-bucket"
+    
+    

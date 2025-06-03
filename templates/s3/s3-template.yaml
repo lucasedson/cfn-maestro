@@ -4,6 +4,7 @@ Description: "AWS CloudFormation Sample Template s3: Create an S3 bucket"
 Parameters:
   BucketName:
     Type: String
+    Default: "sample-bucket"
 
 Resources:
   S3Bucket:

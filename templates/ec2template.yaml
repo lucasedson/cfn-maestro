@@ -1,0 +1,18 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "AWS CloudFormation Sample Template ec2: Create an EC2 instance"
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: "t3.micro"
+
+Resources:
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: "ami-0c1a7f89451184d8b"
+
+Outputs:
+  InstanceId:
+    Value: !Ref EC2Instance

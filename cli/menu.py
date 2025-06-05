@@ -1,6 +1,7 @@
 import inquirer
-from core.run_cmd import run_shell_command, run_async_task
+from core.run_cmd import run_shell_command, run_async_task, watch_shell_command
 from core.parse_templates import parse_templates, parse_template_params
+
 def main_menu():
     questions = [
         inquirer.List(
@@ -53,10 +54,17 @@ def select_template(path):
     cmd = f"awslocal cloudformation create-stack --stack-name {stack_name} --template-body file://{template_file} --parameters {','.join(formated_params)}"
     run_async_task(run_shell_command(cmd))
     
-    view_stack = input("Do you want to view the stack? (y/n): ")
-    if view_stack == "y":
+    # view_stack = input("Do you want to view the stack? (y/n): ")
+    view_stack = inquirer.confirm("Do you want to view the stack?", default=True)
+    
+    if view_stack == True:
         cmd_view = f"awslocal cloudformation describe-stacks --stack-name {stack_name} --output table"
-        run_async_task(run_shell_command(cmd_view))
+        run_async_task(watch_shell_command(cmd_view))
+
+    # destroy_stack = input("Do you want to destroy the stack? (y/n): ")
+    destroy_stack = inquirer.confirm("Do you want to destroy the stack?", default=True)
+    if destroy_stack == True:
+        run_async_task(run_shell_command(f"awslocal cloudformation delete-stack --stack-name {stack_name}"))
 
 def my_infrastructure():
     services = [

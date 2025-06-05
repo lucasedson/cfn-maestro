@@ -1,0 +1,253 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Auto-scaling ECS Fargate service based on SQS queue depth.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'sqs-fargate-scaler'
+    Description: A prefix for all created resources.
+
+Resources:
+  # 1. Fila SQS
+  MonitoredQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-queue'
+
+  # 2. Infraestrutura ECS
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${ProjectName}-cluster'
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-task'
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: !Sub '${ProjectName}-container'
+          Image: 'public.ecr.aws/nginx/nginx:latest' # Imagem de exemplo
+          PortMappings:
+            - ContainerPort: 80
+
+  # O serviço é criado com 0 tarefas iniciais.
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub '${ProjectName}-service'
+      Cluster: !GetAtt ECSCluster.Arn
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: 0
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          # # Em um ambiente real, use sub-redes privadas e um security group restritivo.
+          # # Para LocalStack, a VPC e sub-redes default são suficientes.
+          # Subnets:
+          #    # O LocalStack usa sub-redes padrão, você pode precisar ajustar
+          #    # ou deixar o CloudFormation usar as defaults da sua VPC.
+          #    # Para simplificar, vamos omitir para que ele use as da VPC Default.
+          #    - 'subnet-0123456789abcdef0' # Substitua por uma subnet ID válida ou remova a chave Subnets
+          # SecurityGroups:
+          #    - 'sg-0123456789abcdef0'   # Substitua por um security group ID válido ou remova a chave SecurityGroups
+
+  # 3. IAM Role para as Lambdas
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: 'ecs-update-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:UpdateService
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # 4. Funções Lambda e Tópicos SNS
+  ScaleUpSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-scale-up-topic'
+
+  ScaleDownSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-scale-down-topic'
+
+  ScaleUpFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-scale-up-lambda'
+      Handler: 'index.handler'
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          CLUSTER_NAME: !Ref ECSCluster
+          SERVICE_NAME: !GetAtt ECSService.Name
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+
+          ecs_client = boto3.client('ecs')
+          CLUSTER_NAME = os.environ['CLUSTER_NAME']
+          SERVICE_NAME = os.environ['SERVICE_NAME']
+
+          def handler(event, context):
+              print(f"Scale-up trigger for {SERVICE_NAME} in {CLUSTER_NAME}")
+              try:
+                  ecs_client.update_service(
+                      cluster=CLUSTER_NAME,
+                      service=SERVICE_NAME,
+                      desiredCount=1
+                  )
+                  print("Service desired count set to 1")
+              except Exception as e:
+                  print(f"Error updating service: {e}")
+                  raise e
+
+  ScaleDownFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-scale-down-lambda'
+      Handler: 'index.handler'
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          CLUSTER_NAME: !Ref ECSCluster
+          SERVICE_NAME: !GetAtt ECSService.Name
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+
+          ecs_client = boto3.client('ecs')
+          CLUSTER_NAME = os.environ['CLUSTER_NAME']
+          SERVICE_NAME = os.environ['SERVICE_NAME']
+
+          def handler(event, context):
+              print(f"Scale-down trigger for {SERVICE_NAME} in {CLUSTER_NAME}")
+              try:
+                  ecs_client.update_service(
+                      cluster=CLUSTER_NAME,
+                      service=SERVICE_NAME,
+                      desiredCount=0
+                  )
+                  print("Service desired count set to 0")
+              except Exception as e:
+                  print(f"Error updating service: {e}")
+                  raise e
+
+  # 5. Permissões e Assinaturas (SNS -> Lambda)
+  ScaleUpLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ScaleUpFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: 'sns.amazonaws.com'
+      SourceArn: !Ref ScaleUpSNSTopic
+
+  ScaleDownLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ScaleDownFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: 'sns.amazonaws.com'
+      SourceArn: !Ref ScaleDownSNSTopic
+
+  ScaleUpSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: 'lambda'
+      Endpoint: !GetAtt ScaleUpFunction.Arn
+      TopicArn: !Ref ScaleUpSNSTopic
+
+  ScaleDownSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: 'lambda'
+      Endpoint: !GetAtt ScaleDownFunction.Arn
+      TopicArn: !Ref ScaleDownSNSTopic
+
+  # 6. Alarmes do CloudWatch
+  ScaleUpAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-scale-up-alarm'
+      AlarmDescription: 'Alarm to scale up ECS service when messages are in SQS'
+      Namespace: 'AWS/SQS'
+      MetricName: 'ApproximateNumberOfMessagesVisible'
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt MonitoredQueue.QueueName
+      Statistic: 'Maximum'
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: 'GreaterThanThreshold'
+      AlarmActions:
+        - !Ref ScaleUpSNSTopic
+
+  ScaleDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-scale-down-alarm'
+      AlarmDescription: 'Alarm to scale down ECS service when SQS is empty'
+      Namespace: 'AWS/SQS'
+      MetricName: 'ApproximateNumberOfMessagesVisible'
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt MonitoredQueue.QueueName
+      Statistic: 'Maximum'
+      Period: 60
+      EvaluationPeriods: 2 # Fila vazia por 2 minutos
+      Threshold: 0
+      ComparisonOperator: 'LessThanOrEqualToThreshold'
+      AlarmActions:
+        - !Ref ScaleDownSNSTopic
+
+Outputs:
+  QueueURL:
+    Description: URL of the SQS queue
+    Value: !Ref MonitoredQueue
+  ScaleUpLambdaName:
+    Description: Name of the Scale Up Lambda function
+    Value: !Ref ScaleUpFunction
+  ScaleDownLambdaName:
+    Description: Name of the Scale Down Lambda function
+    Value: !Ref ScaleDownFunction

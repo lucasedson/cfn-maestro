@@ -59,7 +59,7 @@ def select_template(path):
     
     if view_stack == True:
         cmd_view = f"awslocal cloudformation describe-stacks --stack-name {stack_name} --output table"
-        run_async_task(watch_shell_command(cmd_view))
+        run_async_task(watch_shell_command(cmd_view, interval=1.0))
 
     # destroy_stack = input("Do you want to destroy the stack? (y/n): ")
     destroy_stack = inquirer.confirm("Do you want to destroy the stack?", default=True)
